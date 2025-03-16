@@ -3,6 +3,8 @@ package producer
 import (
 	"FranzMQ/constants"
 	"FranzMQ/utils"
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,82 +13,79 @@ import (
 	"strconv"
 	"time"
 
-	"golang.org/x/net/context"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+// Config represents topic configuration
 type Config struct {
 	NumOfPartition int `json:"NumOfPartition"`
 }
 
-// ProduceMessage handles message production with distributed offset management
+// ProduceMessage writes a message with a distributed offset mechanism
 func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, error) {
-	var response NewMsgProduceResponse
-	log.Println("Starting message production")
-	log.Println("Topic Name:", topicName, "Key:", key)
+	log.Println("Starting message production for topic:", topicName, "Key:", key)
+
 	if !utils.FileExists(topicName) {
-		return false, response, fmt.Errorf("topic does not exist, please create the topic first")
+		return false, NewMsgProduceResponse{}, fmt.Errorf("topic does not exist, please create the topic first")
 	}
 
 	config, err := loadConfig(topicName)
 	if err != nil {
-		return false, response, err
+		return false, NewMsgProduceResponse{}, err
 	}
 
 	partition := utils.MurmurHashKeyToPartition(key, config.NumOfPartition)
-	log.Println("Partition selected:", partition)
+	log.Println("Selected Partition:", partition)
 
 	logFile, indexFile, err := openFiles(topicName, partition)
 	if err != nil {
-		return false, response, err
+		return false, NewMsgProduceResponse{}, err
 	}
 	defer logFile.Close()
 	defer indexFile.Close()
 
-	utils.LockFileForWrite(logFile)
-	utils.LockFileForWrite(indexFile)
-	defer utils.UnlockFile(logFile)
-	defer utils.UnlockFile(indexFile)
+	// Use buffered writer for optimized performance
+	logWriter := bufio.NewWriter(logFile)
+	indexWriter := bufio.NewWriter(indexFile)
 
-	startOffsetOfLog, err := logFile.Seek(0, io.SeekEnd)
-	if err != nil {
-		return false, response, err
-	}
-
-	// Get Offset from etcd
+	// Fetch unique offset from etcd
 	offset, err := GetNextOffset(topicName, partition)
 	if err != nil {
-		return false, response, err
+		return false, NewMsgProduceResponse{}, err
 	}
 
-	timeStamp := utils.GetTimeStamp()
-	response = NewMsgProduceResponse{
+	timeStamp := time.Now().UnixNano()
+	startOffset, err := logFile.Seek(0, io.SeekEnd)
+	if err != nil {
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error getting file offset: %w", err)
+	}
+
+	// Write log entry
+	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", timeStamp, partition, offset, msg)
+	if _, err := logWriter.WriteString(logEntry); err != nil {
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing log: %w", err)
+	}
+
+	endOffset := startOffset + int64(len(logEntry))
+
+	// Write index entry
+	indexEntry := fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, startOffset, endOffset, offset)
+	if _, err := indexWriter.WriteString(indexEntry); err != nil {
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing index: %w", err)
+	}
+
+	// Flush buffered writers
+	logWriter.Flush()
+	indexWriter.Flush()
+
+	return true, NewMsgProduceResponse{
 		Offset:    offset,
 		Partition: partition,
 		TimeStamp: timeStamp,
-	}
-
-	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", response.TimeStamp, response.Partition, response.Offset, msg)
-	numOfBytesWritten, err := logFile.WriteString(logEntry)
-	if err != nil {
-		return false, response, fmt.Errorf("error writing to log file: %w", err)
-	}
-	endOffsetOfLog := startOffsetOfLog + int64(numOfBytesWritten)
-
-	if err := updateIndex(indexFile, startOffsetOfLog, endOffsetOfLog, timeStamp, offset); err != nil {
-		return false, response, err
-	}
-
-	return true, response, nil
+	}, nil
 }
 
-func updateIndex(indexFile *os.File, startOffsetOfLog, endOffsetOfLog, timeStamp int64, offset int) error {
-	_, err := indexFile.WriteString(fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, startOffsetOfLog, endOffsetOfLog, offset))
-	if err != nil {
-		return fmt.Errorf("error writing to index file: %w", err)
-	}
-	return nil
-}
-
+// loadConfig loads the partition config for the topic
 func loadConfig(topicName string) (*Config, error) {
 	configPath := fmt.Sprintf("%s%s/%s.json", constants.FilesDir, topicName, topicName)
 	file, err := os.Open(configPath)
@@ -102,16 +101,17 @@ func loadConfig(topicName string) (*Config, error) {
 	return &config, nil
 }
 
+// openFiles opens log and index files
 func openFiles(topicName string, partition int) (*os.File, *os.File, error) {
 	logFilePath := fmt.Sprintf("%s%s/%s-%d.log", constants.FilesDir, topicName, topicName, partition)
-	indexFilePath := fmt.Sprintf("%s%s/%s/%s-%d.index", constants.FilesDir, topicName, "index", topicName, partition)
+	indexFilePath := fmt.Sprintf("%s%s/index/%s-%d.index", constants.FilesDir, topicName, topicName, partition)
 
-	logFile, err := os.OpenFile(logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error opening log file: %w", err)
 	}
 
-	indexFile, err := os.OpenFile(indexFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	indexFile, err := os.OpenFile(indexFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		logFile.Close()
 		return nil, nil, fmt.Errorf("error opening index file: %w", err)
@@ -120,45 +120,46 @@ func openFiles(topicName string, partition int) (*os.File, *os.File, error) {
 	return logFile, indexFile, nil
 }
 
-// GetNextOffset retrieves and increments the offset atomically
+// GetNextOffset fetches and increments the offset atomically using etcd
 func GetNextOffset(topicName string, partition int) (int, error) {
 	etcdClient, err := utils.GetEtcdClient()
 	if err != nil {
 		return -1, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	key := fmt.Sprintf("/offsets/%s/%d", topicName, partition)
 
-	// Try to get the current offset
-	getResp, err := etcdClient.Get(ctx, key)
+	// Atomic transaction to fetch and increment offset
+	resp, err := etcdClient.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(key), ">", 0)).
+		Then(
+			clientv3.OpGet(key),
+		).
+		Else(clientv3.OpPut(key, "1")).Commit()
+
 	if err != nil {
-		return -1, fmt.Errorf("error retrieving offset from etcd: %w", err)
+		return -1, fmt.Errorf("etcd transaction error: %w", err)
 	}
 
-	var currentOffset int
-
-	if len(getResp.Kvs) == 0 {
-		// If key doesn't exist, initialize offset to 1
-		currentOffset = 1
-	} else {
-		// Convert existing offset to int
-		currentOffset, err = strconv.Atoi(string(getResp.Kvs[0].Value))
-		if err != nil {
-			return -1, fmt.Errorf("failed to parse offset from etcd: %w", err)
-		}
-		// Increment the offset
-		currentOffset++
+	if !resp.Succeeded {
+		return 1, nil // First offset
 	}
 
-	// Store the new incremented offset atomically
-	_, err = etcdClient.Put(ctx, key, fmt.Sprint(currentOffset))
+	currentOffset, err := strconv.Atoi(string(resp.Responses[0].GetResponseRange().Kvs[0].Value))
 	if err != nil {
-		return -1, fmt.Errorf("failed to update offset in etcd: %w", err)
+		return -1, fmt.Errorf("error parsing offset: %w", err)
 	}
 
-	log.Println("Incremented offset to:", currentOffset)
-	return currentOffset, nil
+	// Increment and store offset atomically
+	nextOffset := currentOffset + 1
+	_, err = etcdClient.Put(ctx, key, fmt.Sprint(nextOffset))
+	if err != nil {
+		return -1, fmt.Errorf("failed to update offset: %w", err)
+	}
+
+	log.Println("New offset assigned:", nextOffset)
+	return nextOffset, nil
 }

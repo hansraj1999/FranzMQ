@@ -2,6 +2,7 @@ package utils
 
 import (
 	"FranzMQ/constants"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -72,4 +73,14 @@ func UnlockFile(file *os.File) error {
 func GetTimeStamp() int64 {
 	return time.Now().Unix()
 
+}
+
+
+// Generic function to convert any struct to JSON string
+func StructToJSON(v interface{}) (string, error) {
+	jsonData, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(jsonData), nil
 }

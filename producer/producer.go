@@ -81,7 +81,7 @@ func updateIndex(indexFile *os.File, startOffsetOfLog, endOffsetOfLog, timeStamp
 }
 
 func loadConfig(topicName string) (*Config, error) {
-	configPath := fmt.Sprintf("%s%s/%s/%s.json", constants.FilesDir, topicName, "meta", topicName)
+	configPath := fmt.Sprintf("%s%s/%s.json", constants.FilesDir, topicName, topicName)
 	file, err := os.Open(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening config file: %w", err)

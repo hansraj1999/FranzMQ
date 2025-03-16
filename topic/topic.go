@@ -38,6 +38,13 @@ func CreateAtTopic(name string, config Config) (bool, error) {
 			log.Println("Error creating meta file:", err)
 			return false, err
 		}
+		IndexFile, IndexFileErr := os.Create(constants.FilesDir + name + "/" + name + "-" + strconv.Itoa(i) + ".index")
+		_, er := IndexFile.WriteString("timestamp--start--end--offset\n")
+		if er != nil || IndexFileErr != nil {
+			log.Println("Error creating meta file:", err)
+			return false, err
+		}
+		defer IndexFile.Close()
 		defer OffsetFile.Close()
 		defer file.Close()
 		log.Println("File created successfully" + name + "-" + strconv.Itoa(i))

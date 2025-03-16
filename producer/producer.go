@@ -32,30 +32,52 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	partition := utils.MurmurHashKeyToPartition(key, config.NumOfPartition)
 	log.Println("Partition selected:", partition)
 
-	logFile, metaFile, err := openFiles(topicName, partition)
+	logFile, metaFile, indexFile, err := openFiles(topicName, partition)
 	if err != nil {
 		return false, response, err
 	}
+
 	defer logFile.Close()
 	defer metaFile.Close()
+	defer indexFile.Close()
+
+	startOffsetOfLog, err := logFile.Seek(0, io.SeekEnd)
+
+	if err != nil {
+		return false, response, err
+	}
 
 	offset, err := updateOffset(metaFile)
 	if err != nil {
 		return false, response, err
 	}
-
+	timeStamp := utils.GetTimeStamp()
 	response = NewMsgProduceResponse{
 		Offset:    offset,
 		Partition: partition,
-		TimeStamp: utils.GetTimeStamp(),
+		TimeStamp: timeStamp,
 	}
 
 	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", response.TimeStamp, response.Partition, response.Offset, msg)
-	if _, err := logFile.WriteString(logEntry); err != nil {
+	numOfBytesWritten, err := logFile.WriteString(logEntry)
+	if err != nil {
 		return false, response, fmt.Errorf("error writing to log file: %w", err)
 	}
+	endOffsetOfLog := startOffsetOfLog + int64(numOfBytesWritten)
 
+	if err := updateIndex(indexFile, startOffsetOfLog, endOffsetOfLog, timeStamp, offset); err != nil {
+		return false, response, err
+	}
 	return true, response, nil
+}
+
+func updateIndex(indexFile *os.File, startOffsetOfLog, endOffsetOfLog, timeStamp int64, offset int) error {
+	// timestamp--start--end--offset
+	_, err := indexFile.WriteString(fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, startOffsetOfLog, endOffsetOfLog, offset))
+	if err != nil {
+		return fmt.Errorf("error writing to index file: %w", err)
+	}
+	return nil
 }
 
 func loadConfig(topicName string) (*Config, error) {
@@ -73,22 +95,28 @@ func loadConfig(topicName string) (*Config, error) {
 	return &config, nil
 }
 
-func openFiles(topicName string, partition int) (*os.File, *os.File, error) {
+func openFiles(topicName string, partition int) (*os.File, *os.File, *os.File, error) {
 	logFilePath := fmt.Sprintf("%s%s/%s-%d.log", constants.FilesDir, topicName, topicName, partition)
 	metaFilePath := fmt.Sprintf("%s%s/%s-%d.json", constants.FilesDir, topicName, topicName, partition)
+	indexFilePath := fmt.Sprintf("%s%s/%s-%d.index", constants.FilesDir, topicName, topicName, partition)
+
+	indexFile, err := os.OpenFile(indexFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("error opening log file: %w", err)
+	}
 
 	logFile, err := os.OpenFile(logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
-		return nil, nil, fmt.Errorf("error opening log file: %w", err)
+		return nil, nil, nil, fmt.Errorf("error opening log file: %w", err)
 	}
 
 	metaFile, err := os.OpenFile(metaFilePath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		logFile.Close()
-		return nil, nil, fmt.Errorf("error opening meta file: %w", err)
+		return nil, nil, nil, fmt.Errorf("error opening meta file: %w", err)
 	}
 
-	return logFile, metaFile, nil
+	return logFile, metaFile, indexFile, nil
 }
 
 func updateOffset(metaFile *os.File) (int, error) {

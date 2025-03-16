@@ -33,7 +33,7 @@ func TestCreateAtTopic(t *testing.T) {
 	// 3️⃣ Verify partition files exist
 	for i := 0; i < config.NumOfPartition; i++ {
 		logFile := filepath.Join(topicPath, topicName+"-"+strconv.Itoa(i)+".log")
-		metaFile := filepath.Join(topicPath, "/"+"meta"+topicName+"-"+strconv.Itoa(i)+".json")
+		metaFile := filepath.Join(topicPath, "/"+"meta/"+topicName+"-"+strconv.Itoa(i)+".json")
 
 		if _, err := os.Stat(logFile); os.IsNotExist(err) {
 			t.Errorf("Expected log file %s to be created, but it does not exist", logFile)

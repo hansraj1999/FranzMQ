@@ -11,6 +11,8 @@ import (
 
 func setupTestTopic(topic string, numOfPartition int) {
 	os.MkdirAll(constants.FilesDir+topic, 0755)
+	os.MkdirAll(constants.FilesDir+topic+"/"+"meta", 0755)
+	os.MkdirAll(constants.FilesDir+topic+"/"+"index", 0755)
 	config := map[string]interface{}{"NumOfPartition": numOfPartition}
 	configData, _ := json.Marshal(config)
 	ioutil.WriteFile(constants.FilesDir+topic+"/"+topic+".json", configData, 0644)

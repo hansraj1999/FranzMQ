@@ -3,11 +3,9 @@ package producer
 import (
 	"FranzMQ/constants"
 	"FranzMQ/utils"
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strconv"
@@ -37,6 +35,12 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	partition := utils.MurmurHashKeyToPartition(key, config.NumOfPartition)
 	log.Println("Selected Partition:", partition)
 
+	// Fetch unique offset from etcd
+	offset, err := GetNextOffset(topicName, partition)
+	if err != nil {
+		return false, NewMsgProduceResponse{}, err
+	}
+
 	logFile, indexFile, err := openFiles(topicName, partition)
 	if err != nil {
 		return false, NewMsgProduceResponse{}, err
@@ -44,45 +48,29 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	defer logFile.Close()
 	defer indexFile.Close()
 
-	// Use buffered writer for optimized performance
-	logWriter := bufio.NewWriter(logFile)
-	indexWriter := bufio.NewWriter(indexFile)
-
-	// Fetch unique offset from etcd
-	offset, err := GetNextOffset(topicName, partition)
+	// **Ensure correct start offset by reading file size**
+	fileInfo, err := logFile.Stat()
 	if err != nil {
-		return false, NewMsgProduceResponse{}, err
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error getting log file info: %w", err)
 	}
-
-	timeStamp := time.Now().UnixNano()
-	startOffset, err := logFile.Seek(0, io.SeekEnd)
-	if err != nil {
-		return false, NewMsgProduceResponse{}, fmt.Errorf("error getting file offset: %w", err)
-	}
+	startOffset := fileInfo.Size() // Correct current end position
 
 	// Write log entry
-	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", timeStamp, partition, offset, msg)
-	if _, err := logWriter.WriteString(logEntry); err != nil {
+	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", time.Now().UnixNano(), partition, offset, msg)
+	if _, err := logFile.WriteString(logEntry); err != nil {
 		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing log: %w", err)
 	}
 
+	// Compute end offset
 	endOffset := startOffset + int64(len(logEntry))
 
-	// Write index entry
-	indexEntry := fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, startOffset, endOffset, offset)
-	if _, err := indexWriter.WriteString(indexEntry); err != nil {
+	// Update index file with correct start and end offsets
+	indexEntry := fmt.Sprintf("%d--%d--%d--%d\n", time.Now().UnixNano(), startOffset, endOffset, offset)
+	if _, err := indexFile.WriteString(indexEntry); err != nil {
 		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing index: %w", err)
 	}
 
-	// Flush buffered writers
-	logWriter.Flush()
-	indexWriter.Flush()
-
-	return true, NewMsgProduceResponse{
-		Offset:    offset,
-		Partition: partition,
-		TimeStamp: timeStamp,
-	}, nil
+	return true, NewMsgProduceResponse{Offset: offset, Partition: partition, TimeStamp: time.Now().UnixNano()}, nil
 }
 
 // loadConfig loads the partition config for the topic

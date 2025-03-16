@@ -97,8 +97,8 @@ func loadConfig(topicName string) (*Config, error) {
 
 func openFiles(topicName string, partition int) (*os.File, *os.File, *os.File, error) {
 	logFilePath := fmt.Sprintf("%s%s/%s-%d.log", constants.FilesDir, topicName, topicName, partition)
-	metaFilePath := fmt.Sprintf("%s%s/%s-%d.json", constants.FilesDir, topicName, topicName, partition)
-	indexFilePath := fmt.Sprintf("%s%s/%s-%d.index", constants.FilesDir, topicName, topicName, partition)
+	metaFilePath := fmt.Sprintf("%s%s/%s/%s-%d.json", constants.FilesDir, topicName, "meta", topicName, partition)
+	indexFilePath := fmt.Sprintf("%s%s/%s/%s-%d.index", constants.FilesDir, topicName, "index", topicName, partition)
 
 	indexFile, err := os.OpenFile(indexFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {

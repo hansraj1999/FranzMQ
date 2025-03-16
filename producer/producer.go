@@ -3,12 +3,14 @@ package producer
 import (
 	"FranzMQ/constants"
 	"FranzMQ/utils"
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -47,29 +49,51 @@ func ProduceMessage(topicName string, key string, msg interface{}) (bool, NewMsg
 	}
 	defer logFile.Close()
 	defer indexFile.Close()
-	// utils.LockFileForWrite(logFile)
 
-	// Write log entry
+	// Use buffered writers for efficient writes
+	logWriter := bufio.NewWriter(logFile)
+	indexWriter := bufio.NewWriter(indexFile)
+	defer func() {
+		_ = logWriter.Flush()
+		_ = indexWriter.Flush()
+	}()
 
-	jsonFormattedValue,err := utils.StructToJSON(msg)
-	if err != nil{
-		return false, NewMsgProduceResponse{}, fmt.Errorf("error in converting message into json format : %w", err)	
+	// Convert message to JSON
+	jsonFormattedValue, err := utils.StructToJSON(msg)
+	if err != nil {
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error converting message to JSON: %w", err)
 	}
-	
-	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", time.Now().UnixNano(), partition, offset, jsonFormattedValue)
 
-	startOffset, endOffset, err := GetAndIncrementLogMessageOffset(topicName, partition, len(logEntry))
-	if _, err := logFile.WriteString(logEntry); err != nil {
+	// Capture timestamp once
+	timeStamp := time.Now().UnixNano()
+
+	// Prepare log entry efficiently
+	var logEntry strings.Builder
+	logEntry.Grow(64 + len(jsonFormattedValue)) // Pre-allocate buffer
+	logEntry.WriteString(fmt.Sprintf("%d--%d--%d--%s\n", timeStamp, partition, offset, jsonFormattedValue))
+
+	// Fetch and update offsets
+	startOffset, endOffset, err := GetAndIncrementLogMessageOffset(topicName, partition, logEntry.Len())
+	if err != nil {
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error updating offset: %w", err)
+	}
+
+	// Write log entry to buffer
+	if _, err := logWriter.WriteString(logEntry.String()); err != nil {
 		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing log: %w", err)
 	}
 
-	// Update index file with correct start and end offsets
-	indexEntry := fmt.Sprintf("%d--%d--%d--%d\n", time.Now().UnixNano(), startOffset, endOffset, offset)
-	if _, err := indexFile.WriteString(indexEntry); err != nil {
+	// Prepare index entry efficiently
+	var indexEntry strings.Builder
+	indexEntry.Grow(64)
+	indexEntry.WriteString(fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, startOffset, endOffset, offset))
+
+	// Write index entry to buffer
+	if _, err := indexWriter.WriteString(indexEntry.String()); err != nil {
 		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing index: %w", err)
 	}
-	// utils.UnlockFile(logFile)
-	return true, NewMsgProduceResponse{Offset: offset, Partition: partition, TimeStamp: time.Now().UnixNano()}, nil
+
+	return true, NewMsgProduceResponse{Offset: offset, Partition: partition, TimeStamp: timeStamp}, nil
 }
 
 // loadConfig loads the partition config for the topic
@@ -157,53 +181,51 @@ func GetAndIncrementLogMessageOffset(topicName string, partition, size int) (int
 		return -1, -1, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
 	key := fmt.Sprintf("/offsets/%s/%d/start/offset", topicName, partition)
+	maxRetries := 5 // Number of retries before giving up
 
-	// Atomic transaction: Read & Update offset in one go
-	resp, err := etcdClient.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(key), ">", 0)). // Check if key exists
-		Then(clientv3.OpGet(key)).                                  // Fetch current offset
-		Else(clientv3.OpPut(key, "0")).                             // Initialize offset to 0
-		Commit()
+	for i := 0; i < maxRetries; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
 
-	if err != nil {
-		return -1, -1, fmt.Errorf("etcd transaction error: %w", err)
-	}
-
-	var currentOffset int
-	if resp.Succeeded { // Key existed, extract current offset
-		value := resp.Responses[0].GetResponseRange().Kvs
-		if len(value) == 0 {
-			return -1, -1, fmt.Errorf("unexpected empty offset response")
-		}
-		currentOffset, err = strconv.Atoi(string(value[0].Value))
+		// Get the current offset
+		resp, err := etcdClient.Get(ctx, key)
 		if err != nil {
-			return -1, -1, fmt.Errorf("error parsing offset: %w", err)
+			return -1, -1, fmt.Errorf("etcd get error: %w", err)
 		}
-	} else {
-		// First time: Initialize to 0 manually
-		currentOffset = 0
+
+		var currentOffset int
+		if len(resp.Kvs) == 0 {
+			// Initialize if the key doesn't exist
+			currentOffset = 0
+		} else {
+			currentOffset, err = strconv.Atoi(string(resp.Kvs[0].Value))
+			if err != nil {
+				return -1, -1, fmt.Errorf("error parsing offset: %w", err)
+			}
+		}
+
+		nextOffset := currentOffset + size // Compute new offset
+
+		// Attempt atomic update
+		updateResp, err := etcdClient.Txn(ctx).
+			If(clientv3.Compare(clientv3.Value(key), "=", fmt.Sprint(currentOffset))). // Ensure no concurrent writes
+			Then(clientv3.OpPut(key, fmt.Sprint(nextOffset))).                         // Update offset
+			Commit()
+
+		if err != nil {
+			return -1, -1, fmt.Errorf("etcd transaction error: %w", err)
+		}
+
+		if updateResp.Succeeded {
+			log.Println("Assigned new offset range:", currentOffset, "to", nextOffset)
+			return currentOffset, nextOffset, nil
+		}
+
+		// Log and retry if transaction failed due to concurrent modification
+		log.Printf("Offset conflict detected, retrying... attempt %d/%d", i+1, maxRetries)
+		time.Sleep(10 * time.Millisecond) // Small delay before retrying
 	}
 
-	nextOffset := currentOffset + size // Compute new offset
-
-	// ✅ Perform the atomic increment within the same transaction
-	updateResp, err := etcdClient.Txn(ctx).
-		If(clientv3.Compare(clientv3.Value(key), "=", fmt.Sprint(currentOffset))). // Ensure atomic update
-		Then(clientv3.OpPut(key, fmt.Sprint(nextOffset))).                         // Update offset in the same txn
-		Commit()
-
-	if err != nil {
-		return -1, -1, fmt.Errorf("failed to update offset: %w", err)
-	}
-
-	if !updateResp.Succeeded {
-		return -1, -1, fmt.Errorf("concurrent modification detected, retrying may be needed")
-	}
-
-	log.Println("Assigned new offset range:", currentOffset, "to", nextOffset)
-	return currentOffset, nextOffset, nil
+	return -1, -1, fmt.Errorf("failed to update offset after multiple retries due to concurrent modification")
 }

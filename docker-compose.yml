@@ -6,6 +6,7 @@ services:
     container_name: franzmq
     ports:
       - "8080:8080"
+      - "6060:6060"
     volumes:
       - .:/app
       - /app/data

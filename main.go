@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof" // Import for side effects
 	"os"
 )
 
@@ -95,6 +96,7 @@ func produceMessage(w http.ResponseWriter, r *http.Request) {
 
 func ensureDataDir() {
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		log.Println("Data directory not found, creating...")
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
 			log.Fatalf("Error creating data directory: %v", err)
 		}
@@ -106,7 +108,9 @@ func main() {
 	utils.GetEtcdClient()
 	http.HandleFunc("/create-topic", createTopic)
 	http.HandleFunc("/produce", produceMessage)
-
+	go func() {
+		log.Println(http.ListenAndServe(":6060", nil))
+	}()
 	fmt.Println("🚀 FranzMQ server running on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

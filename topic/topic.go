@@ -52,7 +52,8 @@ func CreateAtTopic(name string, config Config) (bool, error) {
 	return true, nil
 }
 func createFiles(config Config, name string) (bool, error) {
-	for i := range config.NumOfPartition {
+
+	for i := 0 ;i< config.NumOfPartition ;i++ {
 		file, err := os.Create(constants.FilesDir + name + "/" + name + "-" + strconv.Itoa(i) + ".log")
 		if err != nil {
 			log.Println("Error creating topic file:", err)
@@ -76,7 +77,6 @@ func createFiles(config Config, name string) (bool, error) {
 		defer OffsetFile.Close()
 		defer file.Close()
 		log.Println("File created successfully" + name + "-" + strconv.Itoa(i))
-
 	}
 	return true, nil
 }

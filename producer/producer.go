@@ -20,7 +20,7 @@ type Config struct {
 }
 
 // ProduceMessage writes a message with a distributed offset mechanism
-func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, error) {
+func ProduceMessage(topicName string, key string, msg interface{}) (bool, NewMsgProduceResponse, error) {
 	log.Println("Starting message production for topic:", topicName, "Key:", key)
 
 	if !utils.FileExists(topicName) {
@@ -56,7 +56,12 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	startOffset := fileInfo.Size() // Correct current end position
 
 	// Write log entry
-	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", time.Now().UnixNano(), partition, offset, msg)
+	jsonFormattedValue,err := utils.StructToJSON(msg)
+	if err != nil{
+		return false, NewMsgProduceResponse{}, fmt.Errorf("error in converting message into json format : %w", err)	
+	}
+	
+	logEntry := fmt.Sprintf("%d--%d--%d--%s\n", time.Now().UnixNano(), partition, offset, jsonFormattedValue)
 	if _, err := logFile.WriteString(logEntry); err != nil {
 		return false, NewMsgProduceResponse{}, fmt.Errorf("error writing log: %w", err)
 	}

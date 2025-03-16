@@ -3,6 +3,7 @@ package main
 import (
 	"FranzMQ/producer"
 	"FranzMQ/topic"
+	"FranzMQ/utils"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -102,7 +103,7 @@ func ensureDataDir() {
 
 func main() {
 	ensureDataDir()
-
+	utils.GetEtcdClient()
 	http.HandleFunc("/create-topic", createTopic)
 	http.HandleFunc("/produce", produceMessage)
 

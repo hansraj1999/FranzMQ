@@ -8,14 +8,17 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
+	"time"
+
+	"golang.org/x/net/context"
 )
 
 type Config struct {
 	NumOfPartition int `json:"NumOfPartition"`
 }
 
-// have a stratergy class to determins the stratergy
-// have a stratergy class to determine the deserialization
+// ProduceMessage handles message production with distributed offset management
 func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, error) {
 	var response NewMsgProduceResponse
 	log.Println("Starting message production")
@@ -32,27 +35,29 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	partition := utils.MurmurHashKeyToPartition(key, config.NumOfPartition)
 	log.Println("Partition selected:", partition)
 
-	logFile, metaFile, indexFile, err := openFiles(topicName, partition)
+	logFile, indexFile, err := openFiles(topicName, partition)
 	if err != nil {
 		return false, response, err
 	}
-	utils.LockFileForWrite(logFile)
-	utils.LockFileForWrite(metaFile)
-	utils.LockFileForWrite(indexFile)
 	defer logFile.Close()
-	defer metaFile.Close()
 	defer indexFile.Close()
 
+	utils.LockFileForWrite(logFile)
+	utils.LockFileForWrite(indexFile)
+	defer utils.UnlockFile(logFile)
+	defer utils.UnlockFile(indexFile)
+
 	startOffsetOfLog, err := logFile.Seek(0, io.SeekEnd)
-
 	if err != nil {
 		return false, response, err
 	}
 
-	offset, err := updateOffset(metaFile)
+	// Get Offset from etcd
+	offset, err := GetNextOffset(topicName, partition)
 	if err != nil {
 		return false, response, err
 	}
+
 	timeStamp := utils.GetTimeStamp()
 	response = NewMsgProduceResponse{
 		Offset:    offset,
@@ -70,14 +75,11 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	if err := updateIndex(indexFile, startOffsetOfLog, endOffsetOfLog, timeStamp, offset); err != nil {
 		return false, response, err
 	}
-	utils.UnlockFile(logFile)
-	utils.UnlockFile(metaFile)
-	utils.UnlockFile(indexFile)
+
 	return true, response, nil
 }
 
 func updateIndex(indexFile *os.File, startOffsetOfLog, endOffsetOfLog, timeStamp int64, offset int) error {
-	// timestamp--start--end--offset
 	_, err := indexFile.WriteString(fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, startOffsetOfLog, endOffsetOfLog, offset))
 	if err != nil {
 		return fmt.Errorf("error writing to index file: %w", err)
@@ -100,55 +102,63 @@ func loadConfig(topicName string) (*Config, error) {
 	return &config, nil
 }
 
-func openFiles(topicName string, partition int) (*os.File, *os.File, *os.File, error) {
+func openFiles(topicName string, partition int) (*os.File, *os.File, error) {
 	logFilePath := fmt.Sprintf("%s%s/%s-%d.log", constants.FilesDir, topicName, topicName, partition)
-	metaFilePath := fmt.Sprintf("%s%s/%s/%s-%d.json", constants.FilesDir, topicName, "meta", topicName, partition)
 	indexFilePath := fmt.Sprintf("%s%s/%s/%s-%d.index", constants.FilesDir, topicName, "index", topicName, partition)
-
-	indexFile, err := os.OpenFile(indexFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("error opening log file: %w", err)
-	}
 
 	logFile, err := os.OpenFile(logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("error opening log file: %w", err)
+		return nil, nil, fmt.Errorf("error opening log file: %w", err)
 	}
 
-	metaFile, err := os.OpenFile(metaFilePath, os.O_RDWR|os.O_CREATE, 0666)
+	indexFile, err := os.OpenFile(indexFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		logFile.Close()
-		return nil, nil, nil, fmt.Errorf("error opening meta file: %w", err)
+		return nil, nil, fmt.Errorf("error opening index file: %w", err)
 	}
 
-	return logFile, metaFile, indexFile, nil
+	return logFile, indexFile, nil
 }
 
-func updateOffset(metaFile *os.File) (int, error) {
-	var meta struct {
-		Offset int `json:"Offset"`
-	}
-
-	metaData, err := io.ReadAll(metaFile)
+// GetNextOffset retrieves and increments the offset atomically
+func GetNextOffset(topicName string, partition int) (int, error) {
+	etcdClient, err := utils.GetEtcdClient()
 	if err != nil {
-		return -1, fmt.Errorf("error reading meta file: %w", err)
+		return -1, err
 	}
 
-	if len(metaData) > 0 {
-		if err := json.Unmarshal(metaData, &meta); err != nil {
-			return -1, fmt.Errorf("error unmarshaling meta file: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	key := fmt.Sprintf("/offsets/%s/%d", topicName, partition)
+
+	// Try to get the current offset
+	getResp, err := etcdClient.Get(ctx, key)
+	if err != nil {
+		return -1, fmt.Errorf("error retrieving offset from etcd: %w", err)
+	}
+
+	var currentOffset int
+
+	if len(getResp.Kvs) == 0 {
+		// If key doesn't exist, initialize offset to 1
+		currentOffset = 1
+	} else {
+		// Convert existing offset to int
+		currentOffset, err = strconv.Atoi(string(getResp.Kvs[0].Value))
+		if err != nil {
+			return -1, fmt.Errorf("failed to parse offset from etcd: %w", err)
 		}
+		// Increment the offset
+		currentOffset++
 	}
 
-	meta.Offset++
-
-	metaFile.Truncate(0)
-	metaFile.Seek(0, 0)
-	jsonData, err := json.MarshalIndent(meta, "", "  ")
+	// Store the new incremented offset atomically
+	_, err = etcdClient.Put(ctx, key, fmt.Sprint(currentOffset))
 	if err != nil {
-		return -1, fmt.Errorf("error encoding meta file: %w", err)
+		return -1, fmt.Errorf("failed to update offset in etcd: %w", err)
 	}
-	metaFile.Write(jsonData)
 
-	return meta.Offset, nil
+	log.Println("Incremented offset to:", currentOffset)
+	return currentOffset, nil
 }

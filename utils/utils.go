@@ -8,10 +8,31 @@ import (
 	"os"
 	"time"
 
+	"sync"
 	"syscall"
 
 	"github.com/spaolacci/murmur3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+var (
+	etcdClient *clientv3.Client
+	once       sync.Once
+)
+
+func GetEtcdClient() (*clientv3.Client, error) {
+	var err error
+	once.Do(func() {
+		etcdClient, err = clientv3.New(clientv3.Config{
+			Endpoints:   []string{"http://etcd:2379"}, // Update with your actual etcd endpoint
+			DialTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			log.Printf("Error connecting to etcd: %v", err)
+		}
+	})
+	return etcdClient, err
+}
 
 func FileExists(name string) bool {
 	_, err := os.Stat(constants.FilesDir + name)

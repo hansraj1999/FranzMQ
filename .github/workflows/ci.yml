@@ -17,7 +17,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Install etcd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y etcd
+          nohup etcd --advertise-client-urls=http://127.0.0.1:2379 --listen-client-urls=http://127.0.0.1:2379 > /dev/null 2>&1 &
 
+      - name: Verify etcd is running
+        run: |
+          sleep 5
+          etcdctl --endpoints=http://127.0.0.1:2379 endpoint status
+          
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

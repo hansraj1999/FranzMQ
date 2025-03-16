@@ -36,7 +36,9 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	if err != nil {
 		return false, response, err
 	}
-
+	utils.LockFileForWrite(logFile)
+	utils.LockFileForWrite(metaFile)
+	utils.LockFileForWrite(indexFile)
 	defer logFile.Close()
 	defer metaFile.Close()
 	defer indexFile.Close()
@@ -68,6 +70,9 @@ func ProduceMessage(topicName, key, msg string) (bool, NewMsgProduceResponse, er
 	if err := updateIndex(indexFile, startOffsetOfLog, endOffsetOfLog, timeStamp, offset); err != nil {
 		return false, response, err
 	}
+	utils.UnlockFile(logFile)
+	utils.UnlockFile(metaFile)
+	utils.UnlockFile(indexFile)
 	return true, response, nil
 }
 

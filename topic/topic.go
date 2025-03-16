@@ -30,7 +30,7 @@ func CreateAtTopic(name string, config Config) (bool, error) {
 		return false, createFilesErr
 	}
 
-	jsonData, err := json.MarshalIndent(config, "", "  ") // Pretty print
+	jsonData, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		log.Println("Error encoding JSON:", err)
 		return false, fmt.Errorf("error while converting config into json")

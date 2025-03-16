@@ -1,0 +1,7 @@
+{
+  "Compression": "lz4",
+  "DataType": "json",
+  "Replicas": 0,
+  "NumOfPartition": 1,
+  "PartitionStratergy": "HASH"
+}

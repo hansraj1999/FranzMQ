@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  franzmq:
+    build: .
+    container_name: franzmq
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - /app/data
+    restart: always
+    working_dir: /app
+    command: go run main.go

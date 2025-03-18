@@ -33,6 +33,7 @@ func getQueue(topic string, partition int) chan LogEntry {
 }
 
 // Produce message and push to appropriate queues
+
 func ProduceMessage(ctx context.Context, topicName, key string, msg interface{}) (bool, NewMsgProduceResponse, error) {
 	ctx, span := constants.Tracer.Start(ctx, "ProduceMessage")
 	defer span.End()
@@ -64,10 +65,16 @@ func ProduceMessage(ctx context.Context, topicName, key string, msg interface{})
 		return false, NewMsgProduceResponse{}, fmt.Errorf("log queue not found for topic %s and partition %d", topicName, partition)
 	}
 
-	// Send LogEntry with context
-	logQueue <- LogEntry{Ctx: ctx, Entry: jsonFormattedValue}
+	// Create callback channel
+	callbackCh := make(chan int, 1)
 
-	return true, NewMsgProduceResponse{Offset: -1, Partition: partition, TimeStamp: timeStamp}, nil
+	// Send LogEntry with callback
+	logQueue <- LogEntry{Ctx: ctx, Entry: jsonFormattedValue, Callback: callbackCh}
+
+	// Wait for the offset from processLogQueue
+	offset := <-callbackCh
+
+	return true, NewMsgProduceResponse{Offset: offset, Partition: partition, TimeStamp: timeStamp}, nil
 }
 
 // Load topic configuration

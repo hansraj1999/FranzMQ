@@ -20,10 +20,10 @@ var (
 )
 
 type LogEntry struct {
-	Ctx   context.Context
-	Entry string
+	Ctx      context.Context
+	Entry    string
+	Callback chan int // Callback channel for offset
 }
-
 type LogWrite struct {
 	Ctx      context.Context
 	FilePath string
@@ -58,14 +58,15 @@ func processLogQueue(topic string, partition int) {
 
 		offsetKey := topic + "-" + strconv.Itoa(partition)
 		offset := constants.OffsetMap.INCR(ctx, offsetKey)
-
+		if logEntry.Callback != nil {
+			logEntry.Callback <- offset
+		}
 		timeStamp := time.Now().UnixNano()
 		logEntryStr := fmt.Sprintf("%d--%d--%d--%s\n", timeStamp, partition, offset, logEntry.Entry)
 
 		log.Println("Queueing log entry with offset:", offset)
 		GlobalLogWriterQueue <- LogWrite{Ctx: ctx, FilePath: getLogFilePath(topic, partition), Entry: logEntryStr}
 
-		// Generate and enqueue index entry
 		endOffset := constants.LogSizeMap.INCRBY(ctx, offsetKey, len(logEntryStr))
 		indexEntry := fmt.Sprintf("%d--%d--%d--%d\n", timeStamp, endOffset-len(logEntryStr), endOffset, offset)
 		GlobalIndexWriterQueue <- LogWrite{Ctx: ctx, FilePath: getIndexFilePath(topic, partition), Entry: indexEntry}

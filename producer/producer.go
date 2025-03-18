@@ -8,12 +8,24 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 )
 
 type Config struct {
 	NumOfPartition int `json:"NumOfPartition"`
 }
+
+type ConfigCacheEntry struct {
+	config     *Config
+	lastUpdate time.Time
+}
+
+// Cache for loaded configurations
+var (
+	configCache   sync.Map // Key: topicName, Value: ConfigCacheEntry
+	cacheDuration = 10 * time.Second
+)
 
 // Ensure the queue is created before use
 func getQueue(topic string, partition int) chan LogEntry {
@@ -63,6 +75,17 @@ func loadConfig(ctx context.Context, topicName string) (*Config, error) {
 	ctx, span := constants.Tracer.Start(ctx, "loadConfig")
 	defer span.End()
 
+	now := time.Now()
+
+	// Check if the config is cached
+	if cached, ok := configCache.Load(topicName); ok {
+		entry := cached.(ConfigCacheEntry)
+		if now.Sub(entry.lastUpdate) < cacheDuration {
+			return entry.config, nil // Return cached config
+		}
+	}
+
+	// Load from disk if cache is expired or missing
 	configPath := fmt.Sprintf("%s%s/%s.json", constants.FilesDir, topicName, topicName)
 	file, err := os.Open(configPath)
 	if err != nil {
@@ -74,6 +97,9 @@ func loadConfig(ctx context.Context, topicName string) (*Config, error) {
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
 		return nil, fmt.Errorf("error decoding config file: %w", err)
 	}
+
+	// Store in cache
+	configCache.Store(topicName, ConfigCacheEntry{config: &config, lastUpdate: now})
 
 	return &config, nil
 }

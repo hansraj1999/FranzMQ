@@ -84,7 +84,7 @@ func produceMessage(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Producing message:", req)
 
-	success, metaData, err := producer.ProduceMessage(req.Topic, req.Key,req.Message)
+	success, metaData, err := producer.ProduceMessage(req.Topic, req.Key, req.Message)
 	if !success || err != nil {
 		jsonResponse(w, http.StatusBadRequest, err.Error())
 		return

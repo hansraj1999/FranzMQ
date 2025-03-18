@@ -2,6 +2,8 @@ package topic
 
 import (
 	"FranzMQ/constants"
+	"FranzMQ/producer"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +12,8 @@ import (
 )
 
 func CreateAtTopic(name string, config Config) (bool, error) {
+	_, span := constants.Tracer.Start(context.Background(), "CreateAtTopic")
+	defer span.End()
 	exist := fileExists(name)
 	log.Println("starting to create a topic with name:", name, "config", config)
 	if exist {
@@ -48,12 +52,14 @@ func CreateAtTopic(name string, config Config) (bool, error) {
 		fmt.Println("Error writing JSON to file:", err)
 		return false, fmt.Errorf("error writing JSON to file")
 	}
+	producer.InitQueues(name, config.NumOfPartition)
 
 	return true, nil
 }
 func createFiles(config Config, name string) (bool, error) {
-
-	for i := 0 ;i< config.NumOfPartition ;i++ {
+	_, span := constants.Tracer.Start(context.Background(), "createFiles")
+	defer span.End()
+	for i := 0; i < config.NumOfPartition; i++ {
 		file, err := os.Create(constants.FilesDir + name + "/" + name + "-" + strconv.Itoa(i) + ".log")
 		if err != nil {
 			log.Println("Error creating topic file:", err)
@@ -82,6 +88,8 @@ func createFiles(config Config, name string) (bool, error) {
 }
 
 func createTopicDirectories(name string) error {
+	_, span := constants.Tracer.Start(context.Background(), "createTopicDirectories")
+	defer span.End()
 	paths := []string{
 		constants.FilesDir + name,
 		constants.FilesDir + name + "/meta",
@@ -98,6 +106,8 @@ func createTopicDirectories(name string) error {
 }
 
 func fileExists(name string) bool {
+	_, span := constants.Tracer.Start(context.Background(), "fileExists")
+	defer span.End()
 	_, err := os.Stat(constants.FilesDir + name)
 	if err != nil {
 		if os.IsNotExist(err) {

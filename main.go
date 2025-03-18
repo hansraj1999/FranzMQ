@@ -1,15 +1,25 @@
 package main
 
 import (
+	"FranzMQ/constants"
 	"FranzMQ/producer"
 	"FranzMQ/topic"
-	"FranzMQ/utils"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof" // Import for side effects
 	"os"
+	"time"
+
+	"go.opentelemetry.io/otel"
+
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.22.0"
 )
 
 const dataDir = "/app/data"
@@ -70,6 +80,8 @@ func createTopic(w http.ResponseWriter, r *http.Request) {
 }
 
 func produceMessage(w http.ResponseWriter, r *http.Request) {
+	ctx, span := constants.Tracer.Start(context.Background(), "produceMessage POST")
+	defer span.End()
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -84,7 +96,7 @@ func produceMessage(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Producing message:", req)
 
-	success, metaData, err := producer.ProduceMessage(req.Topic, req.Key, req.Message)
+	success, metaData, err := producer.ProduceMessage(ctx, req.Topic, req.Key, req.Message)
 	if !success || err != nil {
 		jsonResponse(w, http.StatusBadRequest, err.Error())
 		return
@@ -103,9 +115,53 @@ func ensureDataDir() {
 	}
 }
 
+func startTracing() (*trace.TracerProvider, error) {
+	headers := map[string]string{
+		"content-type": "application/json",
+	}
+
+	exporter, err := otlptrace.New(
+		context.Background(),
+		otlptracehttp.NewClient(
+			otlptracehttp.WithEndpoint("jaeger:4318"),
+			otlptracehttp.WithHeaders(headers),
+			otlptracehttp.WithInsecure(),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating new exporter: %w", err)
+	}
+
+	tracerprovider := trace.NewTracerProvider(
+		trace.WithBatcher(
+			exporter,
+			trace.WithMaxExportBatchSize(trace.DefaultMaxExportBatchSize),
+			trace.WithBatchTimeout(trace.DefaultScheduleDelay*time.Millisecond),
+			trace.WithMaxExportBatchSize(trace.DefaultMaxExportBatchSize),
+		),
+		trace.WithResource(
+			resource.NewWithAttributes(
+				semconv.SchemaURL,
+				semconv.ServiceNameKey.String("FranzMQ"),
+			),
+		),
+	)
+
+	otel.SetTracerProvider(tracerprovider)
+	return tracerprovider, nil
+}
+
 func main() {
+
+	tp, err := startTracing()
+	if err != nil {
+		log.Fatalf("failed to initialize tracer: %v", err)
+	}
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	constants.Tracer = otel.Tracer("franzmq")
+
 	ensureDataDir()
-	utils.GetEtcdClient()
 	http.HandleFunc("/create-topic", createTopic)
 	http.HandleFunc("/produce", produceMessage)
 	go func() {

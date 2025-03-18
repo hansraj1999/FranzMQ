@@ -2,15 +2,13 @@ package utils
 
 import (
 	"FranzMQ/constants"
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"os"
-	"time"
-
 	"sync"
-	"syscall"
+	"time"
 
 	"github.com/spaolacci/murmur3"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -21,63 +19,73 @@ var (
 	once       sync.Once
 )
 
-func GetEtcdClient() (*clientv3.Client, error) {
-	var err error
-	once.Do(func() {
-		etcdClient, err = clientv3.New(clientv3.Config{
-			Endpoints:   []string{"http://etcd:2379"}, // Update with your actual etcd endpoint
-			DialTimeout: 5 * time.Second,
-		})
-		if err != nil {
-			log.Printf("Error connecting to etcd: %v", err)
-		}
-	})
-	return etcdClient, err
+var (
+	fileCache   sync.Map // Stores file existence: key -> exists (bool)
+	cacheExpiry = 60 * time.Second
+)
+
+// FileCacheEntry represents a cached file check result
+type FileCacheEntry struct {
+	exists     bool
+	lastUpdate time.Time
 }
 
-func FileExists(name string) bool {
-	_, err := os.Stat(constants.FilesDir + name)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false // File does not exist
+func FileExists(ctx context.Context, name string) bool {
+	_, span := constants.Tracer.Start(ctx, "FileExists")
+	defer span.End()
+
+	filePath := constants.FilesDir + name
+	now := time.Now()
+
+	// Check cache first
+	if cached, ok := fileCache.Load(filePath); ok {
+		entry := cached.(FileCacheEntry)
+		if now.Sub(entry.lastUpdate) < cacheExpiry {
+			return entry.exists
 		}
-		fmt.Println("Error checking file:", err) // Other errors (e.g., permission issues)
-		return false
 	}
-	return true // File exists
+
+	// Perform actual file check
+	_, err := os.Stat(filePath)
+	exists := err == nil || !os.IsNotExist(err)
+
+	// Log errors (but don't cache them)
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Println("Error checking file:", err)
+	}
+
+	// Cache result
+	fileCache.Store(filePath, FileCacheEntry{exists: exists, lastUpdate: now})
+
+	return exists
 }
 
-func HashKeyToPartition(key string, numPartitions int) int {
+func HashKeyToPartition(ctx context.Context, key string, numPartitions int) int {
+	_, span := constants.Tracer.Start(ctx, "HashKeyToPartition")
+	defer span.End()
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32()) % numPartitions
 }
 
-func MurmurHashKeyToPartition(key string, numPartitions int) int {
+func MurmurHashKeyToPartition(ctx context.Context, key string, numPartitions int) int {
+	_, span := constants.Tracer.Start(ctx, "MurmurHashKeyToPartition")
+	defer span.End()
 	h := murmur3.New32()
 	h.Write([]byte(key))
 	return int(h.Sum32()) % numPartitions
 }
 
-func LockFileForWrite(file *os.File) error {
-	log.Println("Locking file for write", file.Name(), file.Fd(), file)
-	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
-}
-
-// unlockFile releases the lock
-func UnlockFile(file *os.File) error {
-	log.Println("UnLocking file for write", file.Name(), file.Fd(), file)
-	return syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-}
-
-func GetTimeStamp() int64 {
+func GetTimeStamp(ctx context.Context) int64 {
+	_, span := constants.Tracer.Start(ctx, "GetTimeStamp")
+	defer span.End()
 	return time.Now().Unix()
-
 }
-
 
 // Generic function to convert any struct to JSON string
-func StructToJSON(v interface{}) (string, error) {
+func StructToJSON(ctx context.Context, v interface{}) (string, error) {
+	_, span := constants.Tracer.Start(ctx, "StructToJSON")
+	defer span.End()
 	jsonData, err := json.Marshal(v)
 	if err != nil {
 		return "", err

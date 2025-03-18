@@ -9,7 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	_ "net/http/pprof" // Import for side effects
+
+	// _ "net/http/pprof" // Import for side effects
 	"os"
 	"time"
 
@@ -160,13 +161,15 @@ func main() {
 	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	constants.Tracer = otel.Tracer("franzmq")
+	go producer.GlobalWriterThread(producer.GlobalLogWriterQueue)
+	go producer.GlobalWriterThread(producer.GlobalIndexWriterQueue)
 
 	ensureDataDir()
 	http.HandleFunc("/create-topic", createTopic)
 	http.HandleFunc("/produce", produceMessage)
-	go func() {
-		log.Println(http.ListenAndServe(":6060", nil))
-	}()
+	// go func() {
+	// 	log.Println(http.ListenAndServe(":6060", nil))
+	// }()
 	fmt.Println("🚀 FranzMQ server running on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

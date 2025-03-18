@@ -7,7 +7,7 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
-var tracer = otel.Tracer("franzmq")
+var tracer = otel.Tracer("franzmq_mem_manager")
 
 // SafeMap struct to handle concurrent updates with better performance
 type SafeMap struct {

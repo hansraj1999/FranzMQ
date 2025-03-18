@@ -24,6 +24,7 @@ type LogEntry struct {
 	Entry    string
 	Callback chan int // Callback channel for offset
 }
+
 type LogWrite struct {
 	Ctx      context.Context
 	FilePath string

@@ -2,12 +2,16 @@ package producer
 
 import (
 	"FranzMQ/constants"
+	"FranzMQ/metrics"
+	"context"
 	"encoding/json"
 	"io/ioutil"
 	"os"
 	"strconv"
 	"testing"
 )
+
+var tp, _ = metrics.StartTracing()
 
 func setupTestTopic(topic string, numOfPartition int) {
 	os.MkdirAll(constants.FilesDir+topic, 0755)
@@ -25,13 +29,13 @@ func setupTestTopic(topic string, numOfPartition int) {
 func teardownTestTopic(topic string) {
 	os.RemoveAll(constants.FilesDir + topic)
 }
-
 func TestProduceMessage_Success(t *testing.T) {
 	topic := "test_topic"
 	setupTestTopic(topic, 3)
 	defer teardownTestTopic(topic)
-
-	success, response, err := ProduceMessage(topic, "key1", "Hello Kafka")
+	ctx, span := constants.Tracer.Start(context.Background(), "TestProduceMessage_Success POST")
+	defer span.End()
+	success, response, err := ProduceMessage(ctx, topic, "key1", "Hello Kafka")
 
 	if !success || err != nil {
 		t.Errorf("Expected success but got error: %v", err)
@@ -46,7 +50,9 @@ func TestProduceMessage_Success(t *testing.T) {
 
 func TestProduceMessage_TopicDoesNotExist(t *testing.T) {
 	topic := "non_existing_topic"
-	success, _, err := ProduceMessage(topic, "key1", "Hello Kafka")
+	ctx, span := constants.Tracer.Start(context.Background(), "TestProduceMessage_Success POST")
+	defer span.End()
+	success, _, err := ProduceMessage(ctx, topic, "key1", "Hello Kafka")
 
 	if success || err == nil {
 		t.Errorf("Expected failure for non-existing topic but got success")
@@ -57,9 +63,10 @@ func TestProduceMessage_Partitioning(t *testing.T) {
 	topic := "partition_test"
 	setupTestTopic(topic, 5)
 	defer teardownTestTopic(topic)
-
-	success1, response1, _ := ProduceMessage(topic, "keyA", "Message 1")
-	success2, response2, _ := ProduceMessage(topic, "keyA", "Message 2")
+	ctx, span := constants.Tracer.Start(context.Background(), "TestProduceMessage_Success POST")
+	defer span.End()
+	success1, response1, _ := ProduceMessage(ctx, topic, "keyA", "Message 1")
+	success2, response2, _ := ProduceMessage(ctx, topic, "keyA", "Message 2")
 
 	if !success1 || !success2 {
 		t.Errorf("Expected both messages to be produced successfully")
@@ -70,12 +77,14 @@ func TestProduceMessage_Partitioning(t *testing.T) {
 }
 
 func TestProduceMessage_OffsetIncrement(t *testing.T) {
+	ctx, span := constants.Tracer.Start(context.Background(), "TestProduceMessage_Success POST")
+	defer span.End()
 	topic := "offset_test"
 	setupTestTopic(topic, 1)
 	defer teardownTestTopic(topic)
 
-	_, response1, _ := ProduceMessage(topic, "key1", "Msg 1")
-	_, response2, _ := ProduceMessage(topic, "key1", "Msg 2")
+	_, response1, _ := ProduceMessage(ctx, topic, "key1", "Msg 1")
+	_, response2, _ := ProduceMessage(ctx, topic, "key1", "Msg 2")
 
 	if response2.Offset != response1.Offset+1 {
 		t.Errorf("Expected offset to increment sequentially but got %d and %d", response1.Offset, response2.Offset)

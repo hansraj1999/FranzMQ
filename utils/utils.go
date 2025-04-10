@@ -20,7 +20,7 @@ var (
 )
 
 var (
-	fileCache   sync.Map // Stores file existence: key -> exists (bool)
+	FileCache   sync.Map // Stores file existence: key -> exists (bool)
 	cacheExpiry = 60 * time.Second
 )
 
@@ -38,7 +38,7 @@ func FileExists(ctx context.Context, name string) bool {
 	now := time.Now()
 
 	// Check cache first
-	if cached, ok := fileCache.Load(filePath); ok {
+	if cached, ok := FileCache.Load(filePath); ok {
 		entry := cached.(FileCacheEntry)
 		if now.Sub(entry.lastUpdate) < cacheExpiry {
 			return entry.exists
@@ -55,7 +55,7 @@ func FileExists(ctx context.Context, name string) bool {
 	}
 
 	// Cache result
-	fileCache.Store(filePath, FileCacheEntry{exists: exists, lastUpdate: now})
+	FileCache.Store(filePath, FileCacheEntry{exists: exists, lastUpdate: now})
 
 	return exists
 }

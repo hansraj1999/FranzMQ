@@ -129,5 +129,5 @@ func main() {
 	// 	log.Println(http.ListenAndServe(":6060", nil))
 	// }()
 	fmt.Println("🚀 FranzMQ server running on port 8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", nil)) // TODO: pick from env
 }

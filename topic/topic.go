@@ -3,6 +3,7 @@ package topic
 import (
 	"FranzMQ/constants"
 	"FranzMQ/producer"
+	"FranzMQ/utils"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -53,9 +54,10 @@ func CreateAtTopic(name string, config Config) (bool, error) {
 		return false, fmt.Errorf("error writing JSON to file")
 	}
 	producer.InitQueues(name, config.NumOfPartition)
-
+	utils.FileCache.Delete(constants.FilesDir + name)
 	return true, nil
 }
+
 func createFiles(config Config, name string) (bool, error) {
 	_, span := constants.Tracer.Start(context.Background(), "createFiles")
 	defer span.End()

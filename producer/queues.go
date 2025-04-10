@@ -47,7 +47,6 @@ func InitQueues(topicName string, partitions int) {
 		logQueues[topicName][i] = make(chan LogEntry, 10000)
 		go processLogQueue(topicName, i)
 	}
-
 	// Start global writer threads
 }
 
@@ -79,7 +78,7 @@ func GlobalWriterThread(writerQueue chan LogWrite) {
 	fileMap := make(map[string]*bufio.Writer)
 	fileHandles := make(map[string]*os.File)
 
-	ticker := time.NewTicker(5 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
 	batch := make(map[string][]LogWrite) // Group writes by file
